@@ -1,5 +1,6 @@
 run{
-set decryption identified by iwN3E_uaw_Fpa3;
+set decryption identified by XxxxXX;
 run {
 allocate channel t1 type disk;
+
 allocate channel t2 type disk
