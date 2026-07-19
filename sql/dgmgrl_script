@@ -1,0 +1,107 @@
+#!/bin/bash
+# dgmgrl_dataguard_ops.sh
+# Usage:
+#   ./dgmgrl_dataguard_ops.sh show
+#   ./dgmgrl_dataguard_ops.sh validate
+#   ./dgmgrl_dataguard_ops.sh switchover standby_db
+#   ./dgmgrl_dataguard_ops.sh failover standby_db
+#   ./dgmgrl_dataguard_ops.sh reinstate primary_db
+#   ./dgmgrl_dataguard_ops.sh snapshot standby_db
+#   ./dgmgrl_dataguard_ops.sh physical standby_db
+
+set -euo pipefail
+
+BROKER_CONN="${BROKER_CONN:-sys/${ORACLE_PWD}@${PRIMARY_TNS}}"
+
+ACTION="${1:-show}"
+TARGET_DB="${2:-}"
+
+run_dgmgrl() {
+  dgmgrl -silent "$BROKER_CONN" <<EOF
+whenever sqlerror exit 1
+whenever oserror exit 1
+set echo on
+$1
+exit
+EOF
+}
+
+case "$ACTION" in
+  show)
+    run_dgmgrl "show configuration;"
+    ;;
+
+  validate)
+    if [[ -z "$TARGET_DB" ]]; then
+      echo "Usage: $0 validate <db_name>"
+      exit 1
+    fi
+    run_dgmgrl "validate database '$TARGET_DB';"
+    ;;
+
+  switchover)
+    if [[ -z "$TARGET_DB" ]]; then
+      echo "Usage: $0 switchover <target_standby_db>"
+      exit 1
+    fi
+    run_dgmgrl "
+show configuration;
+validate database '$TARGET_DB';
+switchover to '$TARGET_DB';
+show configuration;
+"
+    ;;
+
+  failover)
+    if [[ -z "$TARGET_DB" ]]; then
+      echo "Usage: $0 failover <target_standby_db>"
+      exit 1
+    fi
+    run_dgmgrl "
+show configuration;
+validate database '$TARGET_DB';
+failover to '$TARGET_DB';
+show configuration;
+"
+    ;;
+
+  reinstate)
+    if [[ -z "$TARGET_DB" ]]; then
+      echo "Usage: $0 reinstate <failed_db>"
+      exit 1
+    fi
+    run_dgmgrl "
+show configuration;
+reinstate database '$TARGET_DB';
+show configuration;
+"
+    ;;
+
+  snapshot)
+    if [[ -z "$TARGET_DB" ]]; then
+      echo "Usage: $0 snapshot <standby_db>"
+      exit 1
+    fi
+    run_dgmgrl "
+convert database '$TARGET_DB' to snapshot standby;
+show configuration;
+"
+    ;;
+
+  physical)
+    if [[ -z "$TARGET_DB" ]]; then
+      echo "Usage: $0 physical <snapshot_db>"
+      exit 1
+    fi
+    run_dgmgrl "
+convert database '$TARGET_DB' to physical standby;
+show configuration;
+"
+    ;;
+
+  *)
+    echo "Unknown action: $ACTION"
+    echo "Valid actions: show, validate, switchover, failover, reinstate, snapshot, physical"
+    exit 1
+    ;;
+esac
