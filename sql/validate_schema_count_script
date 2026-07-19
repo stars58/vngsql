@@ -1,0 +1,69 @@
+set pagesize 0
+set linesize 400
+set trimspool on
+set feedback off
+set verify off
+set echo off
+set heading off
+set tab off
+set long 100000
+set longchunksize 100000
+
+accept SCHEMA_NAME char prompt 'Schema name: '
+accept ENV_NAME char prompt 'Environment label (SOURCE or DEST): '
+
+column run_ts new_value RUN_TS
+select to_char(sysdate,'YYYYMMDD_HH24MISS') run_ts from dual;
+
+spool validate_&&ENV_NAME._&&SCHEMA_NAME._&&RUN_TS..lst
+
+prompt ENV|&&ENV_NAME
+prompt SCHEMA|&&SCHEMA_NAME
+prompt DATABASE|&&_CONNECT_IDENTIFIER
+prompt TIMESTAMP|&&RUN_TS
+
+prompt === OBJECT COUNTS ===
+select 'OBJECT_COUNT|' || owner || '|' || object_type || '|' || status || '|' || count(*)
+from dba_objects
+where owner = upper('&&SCHEMA_NAME')
+group by owner, object_type, status
+order by owner, object_type, status;
+
+prompt === INVALID OBJECTS ===
+select 'INVALID_OBJECT|' || owner || '|' || object_type || '|' || object_name || '|' || status
+from dba_objects
+where owner = upper('&&SCHEMA_NAME')
+  and status <> 'VALID'
+order by object_type, object_name;
+
+prompt === TABLE ROW COUNTS ===
+select 'TABLE_ROWS|' || owner || '|' || table_name || '|' || nvl(num_rows,-1) || '|' || nvl(sample_size,-1)
+from dba_tables
+where owner = upper('&&SCHEMA_NAME')
+order by table_name;
+
+prompt === SYSTEM PRIVILEGES ===
+select 'SYS_PRIV|' || grantee || '|' || privilege || '|' || nvl(admin_option,'NO')
+from dba_sys_privs
+where grantee = upper('&&SCHEMA_NAME')
+order by privilege;
+
+prompt === ROLE GRANTS ===
+select 'ROLE_PRIV|' || grantee || '|' || granted_role || '|' || nvl(admin_option,'NO') || '|' || nvl(default_role,'NO')
+from dba_role_privs
+where grantee = upper('&&SCHEMA_NAME')
+order by granted_role;
+
+prompt === OBJECT PRIVILEGES ===
+select 'TAB_PRIV|' || grantee || '|' || owner || '|' || table_name || '|' || privilege || '|' || nvl(grantable,'NO')
+from dba_tab_privs
+where grantee = upper('&&SCHEMA_NAME')
+order by owner, table_name, privilege;
+
+prompt === USER QUOTAS ===
+select 'QUOTA|' || username || '|' || tablespace_name || '|' || nvl(max_bytes,-1)
+from dba_ts_quotas
+where username = upper('&&SCHEMA_NAME')
+order by tablespace_name;
+
+spool off
