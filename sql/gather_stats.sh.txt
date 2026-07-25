@@ -1,0 +1,81 @@
+#!/bin/bash
+# gather_stats.sh
+# Usage: ./gather_stats.sh tables.txt DEGREE USERNAME
+# tables.txt = file containing table names (one per line)
+# DEGREE = degree of parallelism (e.g., 4)
+# USERNAME = schema owner (e.g., HR)
+
+TABLE_LIST=$1
+DEGREE=$2
+USERNAME=$3
+LOGFILE="gather_stats_$(date +%Y%m%d_%H%M%S).log"
+
+if [[ -z "$TABLE_LIST" || -z "$DEGREE" || -z "$USERNAME" ]]; then
+  echo "Usage: $0 <table_list_file> <degree> <username>"
+  exit 1
+fi
+
+# Connect string (adjust as needed)
+ORACLE_USER="your_user"
+ORACLE_PASS="your_password"
+ORACLE_SID="your_service"
+
+echo "Starting gather stats run at $(date)" | tee -a "$LOGFILE"
+
+while read -r TABLE; do
+  if [[ -n "$TABLE" ]]; then
+    echo "Processing table: $TABLE" | tee -a "$LOGFILE"
+
+    sqlplus -s "${ORACLE_USER}/${ORACLE_PASS}@${ORACLE_SID}" <<EOF >> "$LOGFILE" 2>&1
+SET SERVEROUTPUT ON
+WHENEVER SQLERROR EXIT SQL.SQLCODE
+
+PROMPT ===== BEFORE STATS =====
+SELECT table_name, last_analyzed, stale_stats
+FROM dba_tab_statistics
+WHERE owner = UPPER('$USERNAME')
+  AND table_name = UPPER('$TABLE');
+
+DECLARE
+  v_part_count NUMBER;
+BEGIN
+  -- Check if table is partitioned
+  SELECT COUNT(*) INTO v_part_count
+  FROM dba_tab_partitions
+  WHERE table_owner = UPPER('$USERNAME')
+    AND table_name = UPPER('$TABLE');
+
+  IF v_part_count > 0 THEN
+    DBMS_STATS.GATHER_TABLE_STATS(
+      ownname => UPPER('$USERNAME'),
+      tabname => UPPER('$TABLE'),
+      degree  => $DEGREE,
+      granularity => 'PARTITION',
+      cascade => TRUE
+    );
+    DBMS_OUTPUT.PUT_LINE('Partitioned table stats gathered for $TABLE');
+  ELSE
+    DBMS_STATS.GATHER_TABLE_STATS(
+      ownname => UPPER('$USERNAME'),
+      tabname => UPPER('$TABLE'),
+      degree  => $DEGREE,
+      cascade => TRUE
+    );
+    DBMS_OUTPUT.PUT_LINE('Non-partitioned table stats gathered for $TABLE');
+  END IF;
+END;
+/
+
+PROMPT ===== AFTER STATS =====
+SELECT table_name, last_analyzed, stale_stats
+FROM dba_tab_statistics
+WHERE owner = UPPER('$USERNAME')
+  AND table_name = UPPER('$TABLE');
+
+EXIT
+EOF
+
+  fi
+done < "$TABLE_LIST"
+
+echo "Completed gather stats run at $(date)" | tee -a "$LOGFILE"
