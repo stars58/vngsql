@@ -1,107 +1,182 @@
-#!/bin/bash
-# dgmgrl_dataguard_ops.sh
-# Usage:
-#   ./dgmgrl_dataguard_ops.sh show
-#   ./dgmgrl_dataguard_ops.sh validate
-#   ./dgmgrl_dataguard_ops.sh switchover standby_db
-#   ./dgmgrl_dataguard_ops.sh failover standby_db
-#   ./dgmgrl_dataguard_ops.sh reinstate primary_db
-#   ./dgmgrl_dataguard_ops.sh snapshot standby_db
-#   ./dgmgrl_dataguard_ops.sh physical standby_db
-
+#!/usr/bin/env bash
 set -euo pipefail
 
-BROKER_CONN="${BROKER_CONN:-sys/${ORACLE_PWD}@${PRIMARY_TNS}}"
+: "${DGMGRL_CONN:=/}"
+: "${DGMGRL_BIN:=dgmgrl}"
 
-ACTION="${1:-show}"
+usage() {
+  cat <<'EOF'
+Usage:
+  dg_ops.sh <command> [db_unique_name]
+
+Command               Primary/Standby     Description
+-------               ---------------     -----------
+status                primary/standby     Show configuration and database status
+validate              primary/standby     Validate primary and standby databases
+transport-off         primary             Set redo transport off on primary
+transport-on          primary             Set redo transport on on primary
+apply-off             standby             Set redo apply off on standby
+apply-on              standby             Set redo apply on on standby
+switchover-to-standby standby target      Switchover from current primary to discovered standby
+switchover-to-primary primary target      Switchover from current primary back to specified target
+failover              standby target      Failover to discovered standby
+reinstate             primary/failed db    Reinstate discovered primary or specify db_unique_name
+snapshot              standby             Convert discovered standby to snapshot standby
+physical              standby             Convert discovered standby to physical standby
+
+Examples:
+  dg_ops.sh status
+  dg_ops.sh validate
+  dg_ops.sh transport-off
+  dg_ops.sh apply-off
+  dg_ops.sh switchover-to-standby
+  dg_ops.sh switchover-to-primary orcl
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 1
+fi
+
+ACTION="${1:-}"
 TARGET_DB="${2:-}"
 
 run_dgmgrl() {
-  dgmgrl -silent "$BROKER_CONN" <<EOF
-whenever sqlerror exit 1
-whenever oserror exit 1
+  "$DGMGRL_BIN" -silent "$DGMGRL_CONN" <<EOF
 set echo on
 $1
 exit
 EOF
 }
 
+discover_db_names() {
+  local out prim stby
+  out="$(run_dgmgrl "show configuration;")"
+
+  prim="$(awk -F' - ' '/ - Primary database/ {print $1; exit}' <<<"$out" | xargs)"
+  stby="$(awk -F' - ' '/ - Physical standby database/ || / - Snapshot standby database/ || / - Logical standby database/ {print $1; exit}' <<<"$out" | xargs)"
+
+  if [[ -z "$prim" || -z "$stby" ]]; then
+    echo "ERROR: Could not discover PRIMARY_DB or STANDBY_DB."
+    echo "$out"
+    exit 1
+  fi
+
+  PRIMARY_DB="$prim"
+  STANDBY_DB="$stby"
+}
+
+show_status() {
+  run_dgmgrl "
+show configuration;
+show database '$PRIMARY_DB';
+show database '$STANDBY_DB';
+"
+}
+
+validate_all() {
+  run_dgmgrl "
+validate database '$PRIMARY_DB';
+validate database '$STANDBY_DB';
+"
+}
+
+transport_off() {
+  run_dgmgrl "
+edit database '$PRIMARY_DB' set state='TRANSPORT-OFF';
+show database '$PRIMARY_DB';
+"
+}
+
+transport_on() {
+  run_dgmgrl "
+edit database '$PRIMARY_DB' set state='TRANSPORT-ON';
+show database '$PRIMARY_DB';
+"
+}
+
+apply_off() {
+  run_dgmgrl "
+edit database '$STANDBY_DB' set state='APPLY-OFF';
+show database '$STANDBY_DB';
+"
+}
+
+apply_on() {
+  run_dgmgrl "
+edit database '$STANDBY_DB' set state='APPLY-ON';
+show database '$STANDBY_DB';
+"
+}
+
+do_switchover_to_standby() {
+  run_dgmgrl "
+validate database '$PRIMARY_DB';
+validate database '$STANDBY_DB';
+switchover to '$STANDBY_DB';
+show configuration;
+"
+}
+
+do_switchover_to_primary() {
+  local target="${1:-$PRIMARY_DB}"
+  run_dgmgrl "
+validate database '$PRIMARY_DB';
+validate database '$target';
+switchover to '$target';
+show configuration;
+"
+}
+
+do_failover() {
+  run_dgmgrl "
+validate database '$STANDBY_DB';
+failover to '$STANDBY_DB';
+show configuration;
+"
+}
+
+do_reinstate() {
+  local failed_db="${1:-$PRIMARY_DB}"
+  run_dgmgrl "
+reinstate database '$failed_db';
+show configuration;
+"
+}
+
+do_snapshot() {
+  run_dgmgrl "
+convert database '$STANDBY_DB' to snapshot standby;
+show configuration;
+"
+}
+
+do_physical() {
+  run_dgmgrl "
+convert database '$STANDBY_DB' to physical standby;
+show configuration;
+"
+}
+
+discover_db_names
+
 case "$ACTION" in
-  show)
-    run_dgmgrl "show configuration;"
-    ;;
-
-  validate)
-    if [[ -z "$TARGET_DB" ]]; then
-      echo "Usage: $0 validate <db_name>"
-      exit 1
-    fi
-    run_dgmgrl "validate database '$TARGET_DB';"
-    ;;
-
-  switchover)
-    if [[ -z "$TARGET_DB" ]]; then
-      echo "Usage: $0 switchover <target_standby_db>"
-      exit 1
-    fi
-    run_dgmgrl "
-show configuration;
-validate database '$TARGET_DB';
-switchover to '$TARGET_DB';
-show configuration;
-"
-    ;;
-
-  failover)
-    if [[ -z "$TARGET_DB" ]]; then
-      echo "Usage: $0 failover <target_standby_db>"
-      exit 1
-    fi
-    run_dgmgrl "
-show configuration;
-validate database '$TARGET_DB';
-failover to '$TARGET_DB';
-show configuration;
-"
-    ;;
-
-  reinstate)
-    if [[ -z "$TARGET_DB" ]]; then
-      echo "Usage: $0 reinstate <failed_db>"
-      exit 1
-    fi
-    run_dgmgrl "
-show configuration;
-reinstate database '$TARGET_DB';
-show configuration;
-"
-    ;;
-
-  snapshot)
-    if [[ -z "$TARGET_DB" ]]; then
-      echo "Usage: $0 snapshot <standby_db>"
-      exit 1
-    fi
-    run_dgmgrl "
-convert database '$TARGET_DB' to snapshot standby;
-show configuration;
-"
-    ;;
-
-  physical)
-    if [[ -z "$TARGET_DB" ]]; then
-      echo "Usage: $0 physical <snapshot_db>"
-      exit 1
-    fi
-    run_dgmgrl "
-convert database '$TARGET_DB' to physical standby;
-show configuration;
-"
-    ;;
-
+  status)                show_status ;;
+  validate)              validate_all ;;
+  transport-off)         transport_off ;;
+  transport-on)          transport_on ;;
+  apply-off)             apply_off ;;
+  apply-on)              apply_on ;;
+  switchover-to-standby) do_switchover_to_standby ;;
+  switchover-to-primary) do_switchover_to_primary "$TARGET_DB" ;;
+  failover)              do_failover ;;
+  reinstate)             do_reinstate "$TARGET_DB" ;;
+  snapshot)              do_snapshot ;;
+  physical)              do_physical ;;
   *)
-    echo "Unknown action: $ACTION"
-    echo "Valid actions: show, validate, switchover, failover, reinstate, snapshot, physical"
+    echo "Unknown command: $ACTION" >&2
+    usage
     exit 1
     ;;
 esac
